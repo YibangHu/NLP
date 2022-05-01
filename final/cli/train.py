@@ -306,7 +306,7 @@ def preprocess_function(
     model_inputs = tokenizer(inputs, max_length=max_seq_length, truncation=True)
     with tokenizer.as_target_tokenizer():
         lables = tokenizer(targets, max_length=max_seq_length, truncation=True)
-        labels = lables.input_ids
+        labels = lables["input_ids"]
     '''
     target_ids = targets["input_ids"]
 
@@ -316,7 +316,7 @@ def preprocess_function(
         decoder_input_ids.append([target_tokenizer.bos_token_id] + target)
         labels.append(target + [target_tokenizer.eos_token_id])
     '''
-    model_inputs["decoder_input_ids"] = model.prepare_decoder_input_ids_from_labels(lables["input_ids"])
+    model_inputs["decoder_input_ids"] = model.prepare_decoder_input_ids_from_labels(lables)
     labels = torch.tensor(labels)
     labels[labels == tokenizer.pad_token_id] = -100
     model_inputs["labels"] = labels
