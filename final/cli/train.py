@@ -39,6 +39,7 @@ from tqdm.auto import tqdm
 import wandb
 import transformers
 from transformers import AutoTokenizer, AutoModel
+from transformers import T5Tokenizer, T5ForConditionalGeneration
 
 # Imports from our module
 from transformer_mt.modeling_transformer import TransfomerEncoderDecoderModel
@@ -60,7 +61,6 @@ transformers.utils.logging.set_verbosity_warning()
 # To compute BLEU we will use Huggingface Datasets implementation of it
 # Sacrebleu is a flavor of BLEU that standardizes some of the BLEU parameters.
 bleu = datasets.load_metric("sacrebleu")
-BERTscore = datasets.load_metric("bertscore")
 
 def parse_args():
     """This function creates argument parser and parses the scrip input arguments.
@@ -81,6 +81,12 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Train machine translation transformer model")
 
     # Required arguments
+    parser.add_argument(
+        "--model_name", 
+        type=str, 
+        default="DeepPavlov/rubert-base-cased", 
+        help="The name of the model"
+    )
     parser.add_argument(
         "--output_dir",
         type=str,
@@ -294,34 +300,27 @@ def preprocess_function(
         source_tokenizer: The tokenizer to use for the source language.
         target_tokenizer: The tokenizer to use for the target language.
     """
+
     inputs = [ex[source_lang] for ex in examples["translation"]]
     targets = [ex[target_lang] for ex in examples["translation"]]
-
+    
     model_inputs = source_tokenizer(inputs, max_length=max_seq_length, truncation=True)
 
-    targets = target_tokenizer(targets, max_length=max_seq_length - 1, truncation=True)
+    targets = target_tokenizer(targets, max_length=max_seq_length, truncation=True)
+    '''
     target_ids = targets["input_ids"]
 
-    # Inline question 4.1:
-    # What does the loop below do? Why dos target_tokenizer has max_length=max_seq_length-1?
-    # YOUR ANSWER HERE (please limit your answer to 1-2 sentences):
-    # Create decoder_input_ids and labels with same size of target_ids. To shift decoder inputs to the left from the target values.
-    # END OF YOUR ANSWER
+    
     decoder_input_ids = []
     labels = []
     for target in target_ids:
         decoder_input_ids.append([target_tokenizer.bos_token_id] + target)
         labels.append(target + [target_tokenizer.eos_token_id])
-
-    # Inline question 4.2:
-    # Why do we need to shift the target text by one token?
-    # YOUR ANSWER HERE (please limit your answer to one sentence):
-    # Decoder would learn to predict the next word of the translation given previous words.
-    # END OF YOUR ANSWER
-    model_inputs["decoder_input_ids"] = decoder_input_ids
-    model_inputs["labels"] = labels
-
+    '''
+    model_inputs["decoder_input_ids"] = targets.input_ids
+    model_inputs["labels"] = targets.input_ids
     return model_inputs
+
 
 
 def collation_function_for_seq2seq(batch, source_pad_token_id, target_pad_token_id):
@@ -364,22 +363,17 @@ def evaluate_model(
             labels = batch["labels"].to(device)
             key_padding_mask = batch["encoder_padding_mask"].to(device)
 
-            # Inline question 4.3:
-            # What is the diffrence between model.forward() and model.generate()?
-            # Do we need to have decoder_input_ids in the .forward() call? In .generate() call?
-            # YOUR ANSWER HERE (please limit your answer to 1-2 sentences):
-            # model.forward() is used for training and model.generate() is used for inference.
-            # We need to have decoder_input_ids in the .forward() but not in .generate()
             generated_tokens = model.generate(
                 input_ids,
-                bos_token_id=target_tokenizer.bos_token_id,
-                eos_token_id=target_tokenizer.eos_token_id,
-                pad_token_id=target_tokenizer.pad_token_id,
-                key_padding_mask=key_padding_mask,
+                #bos_token_id=target_tokenizer.bos_token_id,
+                #eos_token_id=target_tokenizer.eos_token_id,
+                #pad_token_id=target_tokenizer.pad_token_id,
+                attention_mask=key_padding_mask,
                 max_length=max_seq_length,
-                kind=generation_type,
-                beam_size=beam_size,
+                #kind=generation_type,
+                num_beams=beam_size,
             )
+
             decoded_preds = target_tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
             decoded_labels = target_tokenizer.batch_decode(labels, skip_special_tokens=True)
 
@@ -389,14 +383,14 @@ def evaluate_model(
             decoded_preds, decoded_labels = utils.postprocess_text(decoded_preds, decoded_labels)
 
             bleu.add_batch(predictions=decoded_preds, references=decoded_labels)
-            BERTscore.add_batch(predictions=decoded_preds, references=decoded_labels)
+
             
     model.train()
     eval_metric1 = bleu.compute()
-    eval_metric2 = BERTscore.compute()
+
     evaluation_results = {
         "bleu": eval_metric1["score"],
-        "BERTscore": eval_metric2["score"],
+
         "generation_length": n_generated_tokens / len(dataloader.dataset),
     }
     return evaluation_results, input_ids, decoded_preds, decoded_labels
@@ -405,8 +399,6 @@ def evaluate_model(
 def main():
     # Parse the arguments
     args = parse_args()
-    model_name = "DeepPavlov/rubert-base-cased"
-    pre_trained_model = AutoModel.from_pretrained(model_name)
     logger.info(f"Starting script with arguments: {args}")
 
     # Initialize wandb as soon as possible to log all stdout to the cloud
@@ -441,22 +433,15 @@ def main():
     # Our implementation is two lines.
     # YOUR CODE STARTS HERE
 
-    source_tokenizer = AutoTokenizer.from_pretrained(model_name)
-    target_tokenizer = transformers.PreTrainedTokenizerFast.from_pretrained(tgt_tokenizer_path)
+    source_tokenizer = T5Tokenizer.from_pretrained(args.model_name)
+    target_tokenizer = T5Tokenizer.from_pretrained(args.model_name)
     # YOUR CODE ENDS HERE
 
     # Task 4.2: Create TransformerEncoderDecoder object
     # Provide all of the TransformerLM initialization arguments from args.
     # Move model to the device we use for training
     # YOUR CODE STARTS HERE
-    model = TransfomerEncoderDecoderModel(num_layers=pre_trained_model.config.num_hidden_layers,
-        hidden=pre_trained_model.config.hidden_size,
-        num_heads=pre_trained_model.config.num_attention_heads,
-        fcn_hidden=args.fcn_hidden,
-        max_seq_len=args.max_seq_length,
-        src_vocab_size=source_tokenizer.vocab_size,
-        tgt_vocab_size=target_tokenizer.vocab_size,
-        dropout=args.dropout_rate).to(args.device)
+    model = T5ForConditionalGeneration.from_pretrained(args.model_name).to(args.device)
     # YOUR CODE ENDS HERE
 
     ###############################################################################
@@ -578,7 +563,7 @@ def main():
             decoder_input_ids = batch["decoder_input_ids"].to(args.device)
             key_padding_mask = batch["encoder_padding_mask"].to(args.device)
             labels = batch["labels"].to(args.device)
-
+            '''
             logits = model(
                 input_ids,
                 decoder_input_ids=decoder_input_ids,
@@ -590,7 +575,11 @@ def main():
                 labels.view(-1),
                 ignore_index=target_tokenizer.pad_token_id,
             )
-
+            '''
+            output = model(input_ids=input_ids, attention_mask=key_padding_mask,labels=decoder_input_ids)
+            logits = output.logits
+            loss = output.loss
+            
             loss.backward()
             optimizer.step()
             lr_scheduler.step()
