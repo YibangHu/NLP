@@ -38,11 +38,10 @@ from tqdm.auto import tqdm
 
 import wandb
 import transformers
-from transformers import AutoTokenizer, AutoModel
-from transformers import T5Tokenizer, T5ForConditionalGeneration
+from transformers import MT5ForConditionalGeneration, T5Tokenizer
 
 # Imports from our module
-from transformer_mt.modeling_transformer import TransfomerEncoderDecoderModel
+from transformer_mt.modeling_transformer import TransfomerEncoderDecoderModel 
 from transformer_mt import utils
 
 
@@ -70,7 +69,7 @@ def parse_args():
 
     python cli/train.py \
         --source_lang en \
-        --target_lang es \
+        --target_lang ru \
         --output_dir output_dir \
         --weight_decay 0.01
     
@@ -84,7 +83,7 @@ def parse_args():
     parser.add_argument(
         "--model_name", 
         type=str, 
-        default="DeepPavlov/rubert-base-cased", 
+        default="google/mt5-small", 
         help="The name of the model"
     )
     parser.add_argument(
@@ -192,7 +191,7 @@ def parse_args():
     parser.add_argument(
         "--learning_rate",
         type=float,
-        default=5e-4,
+        default=3e-4,
         help="Initial learning rate (after the potential warmup period) to use.",
     )
     parser.add_argument(
@@ -305,20 +304,19 @@ def preprocess_function(
     targets = [ex[target_lang] for ex in examples["translation"]]
     
     model_inputs = source_tokenizer(inputs, max_length=max_seq_length, truncation=True)
-
-    targets = target_tokenizer(targets, max_length=max_seq_length, truncation=True)
+    with target_tokenizer.as_target_tokenizer():
+        lables = target_tokenizer(targets, max_length=max_seq_length, truncation=True)
     '''
     target_ids = targets["input_ids"]
 
-    
     decoder_input_ids = []
     labels = []
     for target in target_ids:
         decoder_input_ids.append([target_tokenizer.bos_token_id] + target)
         labels.append(target + [target_tokenizer.eos_token_id])
     '''
-    model_inputs["decoder_input_ids"] = targets.input_ids
-    model_inputs["labels"] = targets.input_ids
+    model_inputs["decoder_input_ids"] = lables["input_ids"]
+    model_inputs["labels"] = lables["input_ids"]
     return model_inputs
 
 
@@ -362,6 +360,9 @@ def evaluate_model(
             input_ids = batch["input_ids"].to(device)
             labels = batch["labels"].to(device)
             key_padding_mask = batch["encoder_padding_mask"].to(device)
+
+            #target_tokenizer.padding_side = "left"
+            #target_tokenizer.pad_token = tokenizer.eos_token
 
             generated_tokens = model.generate(
                 input_ids,
@@ -425,24 +426,20 @@ def main():
     ###############################################################################
     # Part 2: Create the model and load the tokenizers
     ###############################################################################
-
+    src_tokenizer_path = os.path.join(args.output_dir, f"{args.source_lang}_tokenizer")
     tgt_tokenizer_path = os.path.join(args.output_dir, f"{args.target_lang}_tokenizer")
-    # Task 4.1: Load source and target tokenizers from the variables above
-    # using transformers.PreTrainedTokenizerFast.from_pretrained
-    # https://huggingface.co/docs/transformers/v4.16.2/en/main_classes/tokenizer#transformers.PreTrainedTokenizerFast
-    # Our implementation is two lines.
-    # YOUR CODE STARTS HERE
-
+    
+    # Task 4.1: Load source and target tokenizers 
     source_tokenizer = T5Tokenizer.from_pretrained(args.model_name)
     target_tokenizer = T5Tokenizer.from_pretrained(args.model_name)
-    # YOUR CODE ENDS HERE
+
 
     # Task 4.2: Create TransformerEncoderDecoder object
     # Provide all of the TransformerLM initialization arguments from args.
     # Move model to the device we use for training
-    # YOUR CODE STARTS HERE
-    model = T5ForConditionalGeneration.from_pretrained(args.model_name).to(args.device)
-    # YOUR CODE ENDS HERE
+
+    model = MT5ForConditionalGeneration.from_pretrained(args.model_name).to(args.device)
+
 
     ###############################################################################
     # Part 3: Pre-process the data
@@ -577,6 +574,7 @@ def main():
             )
             '''
             output = model(input_ids=input_ids, attention_mask=key_padding_mask,labels=decoder_input_ids)
+
             logits = output.logits
             loss = output.loss
             
