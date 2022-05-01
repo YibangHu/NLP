@@ -38,7 +38,7 @@ from tqdm.auto import tqdm
 
 import wandb
 import transformers
-from transformers import MT5ForConditionalGeneration, T5Tokenizer
+from transformers import MT5ForConditionalGeneration, T5ForConditionalGeneration, T5Tokenizer
 
 # Imports from our module
 from transformer_mt.modeling_transformer import TransfomerEncoderDecoderModel 
@@ -279,8 +279,8 @@ def preprocess_function(
     source_lang,
     target_lang,
     max_seq_length,
-    source_tokenizer,
-    target_tokenizer,
+    tokenizer,
+    model,
 ):
     """Tokenize, truncate and add special tokens to the examples. Shift the target text by one token.
     
@@ -303,9 +303,10 @@ def preprocess_function(
     inputs = [ex[source_lang] for ex in examples["translation"]]
     targets = [ex[target_lang] for ex in examples["translation"]]
     
-    model_inputs = source_tokenizer(inputs, max_length=max_seq_length, truncation=True)
-    with target_tokenizer.as_target_tokenizer():
-        lables = target_tokenizer(targets, max_length=max_seq_length, truncation=True)
+    model_inputs = tokenizer(inputs, max_length=max_seq_length, truncation=True)
+    with tokenizer.as_target_tokenizer():
+        lables = tokenizer(targets, max_length=max_seq_length, truncation=True)
+        labels = lables.input_ids
     '''
     target_ids = targets["input_ids"]
 
@@ -315,8 +316,10 @@ def preprocess_function(
         decoder_input_ids.append([target_tokenizer.bos_token_id] + target)
         labels.append(target + [target_tokenizer.eos_token_id])
     '''
-    model_inputs["decoder_input_ids"] = lables["input_ids"]
-    model_inputs["labels"] = lables["input_ids"]
+    model_inputs["decoder_input_ids"] = model.prepare_decoder_input_ids_from_labels(lables["input_ids"])
+    labels = torch.tensor(labels)
+    labels[labels == tokenizer.pad_token_id] = -100
+    model_inputs["labels"] = labels
     return model_inputs
 
 
@@ -361,17 +364,10 @@ def evaluate_model(
             labels = batch["labels"].to(device)
             key_padding_mask = batch["encoder_padding_mask"].to(device)
 
-            #target_tokenizer.padding_side = "left"
-            #target_tokenizer.pad_token = tokenizer.eos_token
-
             generated_tokens = model.generate(
                 input_ids,
-                #bos_token_id=target_tokenizer.bos_token_id,
-                #eos_token_id=target_tokenizer.eos_token_id,
-                #pad_token_id=target_tokenizer.pad_token_id,
                 attention_mask=key_padding_mask,
                 max_length=max_seq_length,
-                #kind=generation_type,
                 num_beams=beam_size,
             )
 
@@ -426,17 +422,16 @@ def main():
     ###############################################################################
     # Part 2: Create the model and load the tokenizers
     ###############################################################################
-    src_tokenizer_path = os.path.join(args.output_dir, f"{args.source_lang}_tokenizer")
-    tgt_tokenizer_path = os.path.join(args.output_dir, f"{args.target_lang}_tokenizer")
     
     # Task 4.1: Load source and target tokenizers 
-    source_tokenizer = T5Tokenizer.from_pretrained(args.model_name)
-    target_tokenizer = T5Tokenizer.from_pretrained(args.model_name)
+    tokenizer = T5Tokenizer.from_pretrained(args.model_name)
 
 
     # Task 4.2: Create TransformerEncoderDecoder object
     # Provide all of the TransformerLM initialization arguments from args.
     # Move model to the device we use for training
+    
+    #model = T5ForConditionalGeneration.from_pretrained(args.model_name).to(args.device)
 
     model = MT5ForConditionalGeneration.from_pretrained(args.model_name).to(args.device)
 
@@ -460,8 +455,8 @@ def main():
         source_lang=args.source_lang,
         target_lang=args.target_lang,
         max_seq_length=args.max_seq_length,
-        source_tokenizer=source_tokenizer,
-        target_tokenizer=target_tokenizer,
+        tokenizer=tokenizer,
+        model = model,
     )
 
     processed_datasets = raw_datasets.map(
@@ -479,8 +474,8 @@ def main():
     # Log a few random samples from the training set:
     for index in random.sample(range(len(train_dataset)), 2):
         logger.info(f"Sample {index} of the training set: {train_dataset[index]}.")
-        logger.info(f"Decoded input_ids: {source_tokenizer.decode(train_dataset[index]['input_ids'])}")
-        logger.info(f"Decoded labels: {target_tokenizer.decode(train_dataset[index]['labels'])}")
+        logger.info(f"Decoded input_ids: {tokenizer.decode(train_dataset[index]['input_ids'])}")
+        logger.info(f"Decoded labels: {tokenizer.decode(train_dataset[index]['labels'])}")
         logger.info("\n")
 
     ###############################################################################
@@ -489,8 +484,8 @@ def main():
 
     collation_function_for_seq2seq_wrapped = partial(
         collation_function_for_seq2seq,
-        source_pad_token_id=source_tokenizer.pad_token_id,
-        target_pad_token_id=target_tokenizer.pad_token_id,
+        source_pad_token_id=tokenizer.pad_token_id,
+        target_pad_token_id=tokenizer.pad_token_id,
     )
 
     # Task 4.3: Create a PyTorch DataLoader for the training set
@@ -541,8 +536,8 @@ def main():
     batch = next(iter(train_dataloader))
     logger.info("Look at the data that we input into the model, check that it looks like what we expect.")
     for index in random.sample(range(len(batch)), 2):
-        logger.info(f"Decoded input_ids: {source_tokenizer.decode(batch['input_ids'][index])}")
-        logger.info(f"Decoded labels: {target_tokenizer.decode(batch['labels'][index])}")
+        logger.info(f"Decoded input_ids: {tokenizer.decode(batch['input_ids'][index])}")
+        logger.info(f"Decoded labels: {tokenizer.decode(batch['labels'][index])}")
         logger.info("\n")
 
     ###############################################################################
@@ -601,7 +596,7 @@ def main():
                 # Please pay attention to it during training.
                 # If the metric is significantly below 80%, there is a chance of a bug somewhere.
                 predictions = logits.argmax(-1)
-                label_nonpad_mask = labels != target_tokenizer.pad_token_id
+                label_nonpad_mask = labels != tokenizer.pad_token_id
                 num_words_in_batch = label_nonpad_mask.sum().item()
 
                 accuracy = (predictions == labels).masked_select(label_nonpad_mask).sum().item() / num_words_in_batch
@@ -615,7 +610,7 @@ def main():
                 eval_results, last_input_ids, last_decoded_preds, last_decoded_labels = evaluate_model(
                     model=model,
                     dataloader=eval_dataloader,
-                    target_tokenizer=target_tokenizer,
+                    target_tokenizer=tokenizer,
                     device=args.device,
                     max_seq_length=args.max_seq_length,
                     generation_type=args.generation_type,
@@ -631,7 +626,7 @@ def main():
                 )
                 logger.info("Generation example:")
                 random_index = random.randint(0, len(last_input_ids) - 1)
-                logger.info(f"Input sentence: {source_tokenizer.decode(last_input_ids[random_index], skip_special_tokens=True)}")
+                logger.info(f"Input sentence: {tokenizer.decode(last_input_ids[random_index], skip_special_tokens=True)}")
                 logger.info(f"Generated sentence: {last_decoded_preds[random_index]}")
                 logger.info(f"Reference sentence: {last_decoded_labels[random_index][0]}")
 
