@@ -267,9 +267,6 @@ def parse_args():
     )
 
     args = parser.parse_args()
-    
-    if f"{args.target_lang}_tokenizer" not in os.listdir(args.output_dir):
-        raise ValueError(f"The target tokenizer is not found in {args.output_dir}")
 
     return args
 
@@ -280,7 +277,6 @@ def preprocess_function(
     target_lang,
     max_seq_length,
     tokenizer,
-    model,
 ):
     """Tokenize, truncate and add special tokens to the examples. Shift the target text by one token.
     
@@ -299,27 +295,18 @@ def preprocess_function(
         source_tokenizer: The tokenizer to use for the source language.
         target_tokenizer: The tokenizer to use for the target language.
     """
-
-    inputs = [ex[source_lang] for ex in examples["translation"]]
+    task_prefix = "translate English to German: "
+    inputs = [task_prefix + ex[source_lang] for ex in examples["translation"]]
     targets = [ex[target_lang] for ex in examples["translation"]]
-    
-    model_inputs = tokenizer(inputs, max_length=max_seq_length, truncation=True)
-    with tokenizer.as_target_tokenizer():
-        lables = tokenizer(targets, max_length=max_seq_length, truncation=True)
-        labels = lables["input_ids"]
-    '''
-    target_ids = targets["input_ids"]
 
-    decoder_input_ids = []
-    labels = []
-    for target in target_ids:
-        decoder_input_ids.append([target_tokenizer.bos_token_id] + target)
-        labels.append(target + [target_tokenizer.eos_token_id])
-    '''
-    model_inputs["decoder_input_ids"] = model.prepare_decoder_input_ids_from_labels(lables)
-    labels = torch.tensor(labels)
-    labels[labels == tokenizer.pad_token_id] = -100
-    model_inputs["labels"] = labels
+    model_inputs = tokenizer(inputs, max_length=max_seq_length, truncation=True, padding=True)
+    with tokenizer.as_target_tokenizer():
+        targets = tokenizer(targets, max_length=max_seq_length, truncation=True, padding=True)
+    target_ids = targets["input_ids"]
+    
+    model_inputs["decoder_input_ids"] = target_ids
+    model_inputs["labels"] = target_ids
+    
     return model_inputs
 
 
@@ -353,7 +340,6 @@ def evaluate_model(
     target_tokenizer,
     device,
     max_seq_length,
-    generation_type,
     beam_size,
 ):
     n_generated_tokens = 0
@@ -369,6 +355,7 @@ def evaluate_model(
                 attention_mask=key_padding_mask,
                 max_length=max_seq_length,
                 num_beams=beam_size,
+                do_sample=False,
             )
 
             decoded_preds = target_tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
@@ -430,10 +417,9 @@ def main():
     # Task 4.2: Create TransformerEncoderDecoder object
     # Provide all of the TransformerLM initialization arguments from args.
     # Move model to the device we use for training
-    
-    #model = T5ForConditionalGeneration.from_pretrained(args.model_name).to(args.device)
 
-    model = MT5ForConditionalGeneration.from_pretrained(args.model_name).to(args.device)
+    model = T5ForConditionalGeneration.from_pretrained(args.model_name).to(args.device)
+    #model = MT5ForConditionalGeneration.from_pretrained(args.model_name).to(args.device)
 
 
     ###############################################################################
@@ -456,7 +442,6 @@ def main():
         target_lang=args.target_lang,
         max_seq_length=args.max_seq_length,
         tokenizer=tokenizer,
-        model = model,
     )
 
     processed_datasets = raw_datasets.map(
@@ -555,19 +540,7 @@ def main():
             decoder_input_ids = batch["decoder_input_ids"].to(args.device)
             key_padding_mask = batch["encoder_padding_mask"].to(args.device)
             labels = batch["labels"].to(args.device)
-            '''
-            logits = model(
-                input_ids,
-                decoder_input_ids=decoder_input_ids,
-                key_padding_mask=key_padding_mask,
-            )
 
-            loss = F.cross_entropy(
-                logits.view(-1, logits.shape[-1]),
-                labels.view(-1),
-                ignore_index=target_tokenizer.pad_token_id,
-            )
-            '''
             output = model(input_ids=input_ids, attention_mask=key_padding_mask,labels=decoder_input_ids)
 
             logits = output.logits
@@ -613,7 +586,6 @@ def main():
                     target_tokenizer=tokenizer,
                     device=args.device,
                     max_seq_length=args.max_seq_length,
-                    generation_type=args.generation_type,
                     beam_size=args.beam_size,
                 )
                 # YOUR CODE ENDS HERE
@@ -650,6 +622,7 @@ def main():
 
 
 if __name__ == "__main__":
+    torch.multiprocessing.set_start_method('spawn')
     if version.parse(datasets.__version__) < version.parse("1.18.0"):
         raise RuntimeError("This script requires Datasets 1.18.0 or higher. Please update via pip install -U datasets.")
 
