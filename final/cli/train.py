@@ -39,9 +39,8 @@ from tqdm.auto import tqdm
 import wandb
 import transformers
 from transformers import MT5ForConditionalGeneration, T5ForConditionalGeneration, T5Tokenizer
-
+from transformers import DataCollatorForSeq2Seq
 # Imports from our module
-from transformer_mt.modeling_transformer import TransfomerEncoderDecoderModel 
 from transformer_mt import utils
 
 
@@ -278,7 +277,7 @@ def preprocess_function(
     max_seq_length,
     tokenizer,
 ):
-    """Tokenize, truncate and add special tokens to the examples. Shift the target text by one token.
+    """Tokenize, truncate and add special tokens to the examples. 
     
     Args:
         examples: A dictionary with a single key "translation",
@@ -295,6 +294,8 @@ def preprocess_function(
         source_tokenizer: The tokenizer to use for the source language.
         target_tokenizer: The tokenizer to use for the target language.
     """
+
+
     task_prefix = "translate English to German: "
     inputs = [task_prefix + ex[source_lang] for ex in examples["translation"]]
     targets = [ex[target_lang] for ex in examples["translation"]]
@@ -304,14 +305,13 @@ def preprocess_function(
         targets = tokenizer(targets, max_length=max_seq_length, truncation=True, padding=True)
     target_ids = targets["input_ids"]
     
-    model_inputs["decoder_input_ids"] = target_ids
     model_inputs["labels"] = target_ids
     
     return model_inputs
 
 
 
-def collation_function_for_seq2seq(batch, source_pad_token_id, target_pad_token_id):
+def collation_function_for_seq2seq(batch, pad_token_id):
     """
     Args:
         batch: a list of dicts of numpy arrays with keys
@@ -320,16 +320,14 @@ def collation_function_for_seq2seq(batch, source_pad_token_id, target_pad_token_
             labels
     """
     input_ids_list = [ex["input_ids"] for ex in batch]
-    decoder_input_ids_list = [ex["decoder_input_ids"] for ex in batch]
     labels_list = [ex["labels"] for ex in batch]
 
     collated_batch = {
-        "input_ids": utils.pad(input_ids_list, source_pad_token_id),
-        "decoder_input_ids": utils.pad(decoder_input_ids_list, target_pad_token_id),
-        "labels": utils.pad(labels_list, target_pad_token_id),
+        "input_ids": utils.pad(input_ids_list, pad_token_id),
+        "labels": utils.pad(labels_list, pad_token_id),
     }
 
-    collated_batch["encoder_padding_mask"] = collated_batch["input_ids"] == source_pad_token_id
+    collated_batch["encoder_padding_mask"] = collated_batch["input_ids"] == pad_token_id
     return collated_batch
 
 
@@ -348,11 +346,9 @@ def evaluate_model(
         with torch.inference_mode():
             input_ids = batch["input_ids"].to(device)
             labels = batch["labels"].to(device)
-            key_padding_mask = batch["encoder_padding_mask"].to(device)
 
             generated_tokens = model.generate(
                 input_ids,
-                attention_mask=key_padding_mask,
                 max_length=max_seq_length,
                 num_beams=beam_size,
                 do_sample=False,
@@ -410,17 +406,12 @@ def main():
     # Part 2: Create the model and load the tokenizers
     ###############################################################################
     
-    # Task 4.1: Load source and target tokenizers 
+    #Load tokenizers 
     tokenizer = T5Tokenizer.from_pretrained(args.model_name)
 
 
-    # Task 4.2: Create TransformerEncoderDecoder object
-    # Provide all of the TransformerLM initialization arguments from args.
-    # Move model to the device we use for training
-
+    # Load model
     model = T5ForConditionalGeneration.from_pretrained(args.model_name).to(args.device)
-    #model = MT5ForConditionalGeneration.from_pretrained(args.model_name).to(args.device)
-
 
     ###############################################################################
     # Part 3: Pre-process the data
@@ -469,22 +460,14 @@ def main():
 
     collation_function_for_seq2seq_wrapped = partial(
         collation_function_for_seq2seq,
-        source_pad_token_id=tokenizer.pad_token_id,
-        target_pad_token_id=tokenizer.pad_token_id,
+        pad_token_id=tokenizer.pad_token_id,
     )
 
-    # Task 4.3: Create a PyTorch DataLoader for the training set
-    # 1. Provide your train_dataset to it.
-    # 2. Indicate that you want this dataloader to shuffle the data.
-    # 3. Speficy collate_fn function to be collation_function_for_seq2seq_wrapped
-    # 4. Provide the batch size you want to use from the args
-    # 5. Do the same for the evaluation set, but do not shuffle it.
-    # Our implementation is two lines, but if you write it in 10-12 lines it would be more readable.
-    # (readability matters)
-    # YOUR CODE STARTS HERE
+    # Create a PyTorch DataLoader for the training set
+    # Speficy collate_fn function to be collation_function_for_seq2seq_wrapped
     train_dataloader = DataLoader(train_dataset, shuffle=True, collate_fn=collation_function_for_seq2seq_wrapped, batch_size=args.batch_size, num_workers=args.preprocessing_num_workers)
     eval_dataloader = DataLoader(eval_dataset, shuffle=False, collate_fn=collation_function_for_seq2seq_wrapped, batch_size=args.batch_size,num_workers=args.preprocessing_num_workers)
-    # YOUR CODE ENDS HERE
+
 
     ###############################################################################
     # Part 5: Create optimizer and scheduler
@@ -537,11 +520,11 @@ def main():
         # iterate over batches
         for batch in train_dataloader:
             input_ids = batch["input_ids"].to(args.device)
-            decoder_input_ids = batch["decoder_input_ids"].to(args.device)
-            key_padding_mask = batch["encoder_padding_mask"].to(args.device)
             labels = batch["labels"].to(args.device)
 
-            output = model(input_ids=input_ids, attention_mask=key_padding_mask,labels=decoder_input_ids)
+            output = model(input_ids=input_ids, 
+                        labels=labels
+                    )
 
             logits = output.logits
             loss = output.loss
@@ -622,7 +605,7 @@ def main():
 
 
 if __name__ == "__main__":
-    torch.multiprocessing.set_start_method('spawn')
+    #torch.multiprocessing.set_start_method('spawn')
     if version.parse(datasets.__version__) < version.parse("1.18.0"):
         raise RuntimeError("This script requires Datasets 1.18.0 or higher. Please update via pip install -U datasets.")
 
