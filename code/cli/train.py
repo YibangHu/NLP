@@ -351,7 +351,6 @@ def evaluate_model(
                 input_ids,
                 max_length=max_seq_length,
                 num_beams=beam_size,
-                do_sample=False,
             )
 
             decoded_preds = target_tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
