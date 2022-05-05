@@ -8,6 +8,7 @@ python cli/train.py \
     --dataset_config ru-en \
     --source_lang en \
     --target_lang ru \
+    --weight_decay 0.01 \
     --output_dir output_dir \
     --batch_size 8 \
     --num_warmup_steps 5000 \
