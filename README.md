@@ -1,5 +1,5 @@
 # NLP Final project
-model from https://wandb.ai/hyb/transformer_mt/runs/3maarrci/files?workspace=user-hyb
+model from https://wandb.ai/hyb/transformer_mt/runs/3maarrci/files?workspace=user-hyb \
 Here's an example script
 
 ```
