@@ -38,9 +38,7 @@ from tqdm.auto import tqdm
 
 import wandb
 import transformers
-from transformers import MT5ForConditionalGeneration, T5ForConditionalGeneration, T5Tokenizer
-from transformers import DataCollatorForSeq2Seq
-# Imports from our module
+from transformers import T5ForConditionalGeneration, T5Tokenizer
 from transformer_mt import utils
 
 
@@ -130,30 +128,6 @@ def parse_args():
         help="Whether to use a small subset of the dataset for debugging.",
     )
     # Model arguments
-    parser.add_argument(
-        "--num_layers",
-        default=6,
-        type=int,
-        help="Number of hidden layers in the Transformer encoder",
-    )
-    parser.add_argument(
-        "--hidden_size",
-        default=512,
-        type=int,
-        help="Hidden size of the Transformer encoder",
-    )
-    parser.add_argument(
-        "--num_heads",
-        default=8,
-        type=int,
-        help="Number of attention heads in the Transformer encoder",
-    )
-    parser.add_argument(
-        "--fcn_hidden",
-        default=2048,
-        type=int,
-        help="Hidden size of the FCN",
-    )
     parser.add_argument(
         "--max_seq_length",
         type=int,
@@ -291,8 +265,7 @@ def preprocess_function(
         source_lang: The language code of the source language.
         target_lang: The language code of the target language.
         max_seq_length: The maximum total sequence length (in tokens) for source and target texts.
-        source_tokenizer: The tokenizer to use for the source language.
-        target_tokenizer: The tokenizer to use for the target language.
+        source_tokenizer: The tokenizer to use for the both language.
     """
 
 
@@ -316,7 +289,6 @@ def collation_function_for_seq2seq(batch, pad_token_id):
     Args:
         batch: a list of dicts of numpy arrays with keys
             input_ids
-            decoder_input_ids
             labels
     """
     input_ids_list = [ex["input_ids"] for ex in batch]
@@ -369,7 +341,6 @@ def evaluate_model(
 
     evaluation_results = {
         "bleu": eval_metric1["score"],
-
         "generation_length": n_generated_tokens / len(dataloader.dataset),
     }
     return evaluation_results, input_ids, decoded_preds, decoded_labels
@@ -394,8 +365,6 @@ def main():
     raw_datasets = load_dataset(args.dataset_name, args.dataset_config_name)
     if "validation" not in raw_datasets:
         # will create "train" and "test" subsets
-        # fix seed to make sure that the split is reproducible
-        # note that we should use the same seed here and in create_tokenizer.py
         raw_datasets = raw_datasets["train"].train_test_split(test_size=2000, seed=42)
 
     if args.debug:
@@ -408,7 +377,6 @@ def main():
     #Load tokenizers 
     tokenizer = T5Tokenizer.from_pretrained(args.model_name)
 
-
     # Load model
     model = T5ForConditionalGeneration.from_pretrained(args.model_name).to(args.device)
 
@@ -420,12 +388,6 @@ def main():
     # First we tokenize all the texts.
     column_names = raw_datasets["train"].column_names
 
-    # (It is not nesessary to understand partial for this assignment)
-    # Partial is a slightly magic function that wraps other funcitons.
-    # https://stackoverflow.com/questions/15331726/how-does-functools-partial-do-what-it-does
-    # Because .map expects the pre-processing function only to have one argument,
-    # we need to wrap preprocess_function() in a partial and provide the rest of the arguments.
-    # It is better to do this instead of defining a function right here (as we did in the previous homework)
     preprocess_function_wrapped = partial(
         preprocess_function,
         source_lang=args.source_lang,
@@ -604,7 +566,6 @@ def main():
 
 
 if __name__ == "__main__":
-    #torch.multiprocessing.set_start_method('spawn')
     if version.parse(datasets.__version__) < version.parse("1.18.0"):
         raise RuntimeError("This script requires Datasets 1.18.0 or higher. Please update via pip install -U datasets.")
 
