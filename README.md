@@ -1,5 +1,6 @@
 # NLP Final project
-Here's an example script that works ok(-ish)
+model from https://wandb.ai/hyb/transformer_mt/runs/3maarrci/files?workspace=user-hyb
+Here's an example script
 
 ```
 python cli/train.py \
